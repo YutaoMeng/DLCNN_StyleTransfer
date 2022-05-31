@@ -2,10 +2,13 @@ import numpy as np
 from PIL import Image
 import time
 from types import FunctionType
-
 import tensorflow as tf
-
 from tensorflow.python.keras import models
+
+import customized_model as customized
+
+
+original_ratio = None
 
 
 def preprocess_img(im: Image, name='vgg'):
@@ -13,9 +16,13 @@ def preprocess_img(im: Image, name='vgg'):
 
     :type im: PIL.Image
     """
+    global original_ratio
     max_size = 256
     max_edge = max(im.width, im.height)
-    if max_edge > max_size:
+    if name.startswith("custom"):
+        original_ratio = im.width / im.height
+        im = im.resize((224, 224), Image.ANTIALIAS)
+    elif max_edge > max_size:
         scale = max_size / max_edge
         im = im.resize((round(im.width * scale), round(im.height * scale)), Image.ANTIALIAS)
 
@@ -23,8 +30,7 @@ def preprocess_img(im: Image, name='vgg'):
     im = np.expand_dims(np.array(im), 0)
     if name.startswith("vgg"):
         im = tf.keras.applications.vgg19.preprocess_input(im)
-    # elif name.startswith('mobilenet'):
-    #     im = im / 255.
+
     return im
 
 
@@ -43,10 +49,13 @@ def deprocess_img(processed_im: np.ndarray, name="vgg"):
         x[:, :, 1] += 116.779
         x[:, :, 2] += 123.68
         x = x[:, :, ::-1]
-    # elif name.startswith("mobilenet"):
-    #     x *= 255.
 
     x = np.clip(x, 0, 255).astype('uint8')
+    if name.startswith("custom"):
+        x = Image.fromarray(x)
+        x = x.resize((round(x.height * original_ratio), x.height), Image.ANTIALIAS)
+        x = np.array(x)
+
     return x
 
 
@@ -81,7 +90,7 @@ def get_model(name='vgg'):
 
     if name.startswith('vgg'):
         # Content layer where will pull our feature maps
-        content_layers = ['block5_conv2']
+        content_layers = ['block5_conv1']
 
         # Style layer we are interested in
         style_layers = ['block1_conv1',
@@ -118,6 +127,19 @@ def get_model(name='vgg'):
         content_outputs = [model.get_layer(name).output for name in content_layers]
         model_outputs = style_outputs + content_outputs
         # Build model
+        return models.Model(model.input, model_outputs)
+    elif name.startswith('custom'):
+        content_layers = ["Conv_1_bn"]
+        style_layers = ['dense_1', 'dense_2'] + [f"block_{i}_depthwise_relu" for i in range(1, 17, 6)]
+        num_content_layers = len(content_layers)
+        num_style_layers = len(style_layers)
+
+        model = customized.get_model()
+        model.trainable = False
+        # Get output layers corresponding to style and content layers
+        style_outputs = [model.get_layer(name).output for name in style_layers]
+        content_outputs = [model.get_layer(name).output for name in content_layers]
+        model_outputs = style_outputs + content_outputs
         return models.Model(model.input, model_outputs)
     else:
         raise ValueError(f"Unknown model name: {name}")
